@@ -1,0 +1,145 @@
+One starting idea: a pure functional language with eventual sends.
+
+{f x} returns a promise for the value from sending x to f.
+{f x y} is sugar for {{f x} y}. Implement with promise pipelining.
+
+A problem: in currying, multi-arg functions introduce anonymous
+functions, which conflicts with trying to name everything for the sake
+of live upgrade.
+
+In MultiLisp, IIRC, an immediate call on an unresolved future blocks.
+In E, it's an error, throwing an exception.
+If we follow E here, do we have anything new?
+
+Different forks we could take from there:
+
+  * Add assignment.
+
+  * Could there actually be some abstraction like monads, functional
+    in flavor, that's consistent with security boundaries? Doubtful!
+
+What about Miranda methods? They're quite incompatible with this
+one-arg function calling. We could add an operation like 
+    miranda x .print_on -> <the print_on method>
+and one to override the defaults:
+    override x {print_on: <the print_on method>} -> x'
+which all kind of sucks but we're just making a toy, right?
+
+Now, what about errors/exceptions/escaping? We want some kind of
+harmony across immediate and eventual sends, how the language handles
+errors in the two cases. 
+
+Contracts are pretty important. If you stick with this, add them in
+pretty early.
+
+What are some good example programs to illustrate distribution,
+concurrency, ...? Idea: social networking. (Assuming no malice so we
+don't need crypto. I know, silly.)
+
+
+Abstract syntax:
+
+e = constant
+  | var
+  | ($given var e)
+  | ($call e e)
+
+
+Primitives:
+
+send
+make_promise
+miranda, override
+(:)
+make_box
+make_brand
+True, False
+$if
+
+
+Concrete syntax:
+
+constant = '.' symbol | "string" | decimalinteger | () | []
+symbol = var | operator
+
+
+Sugar:
+
+f x			($call f x)
+e x y			((e x) y)
+fn x => e		($given x e)
+fn x y => e				[not needed yet]
+(e1; e2)  		(fn _ => e2) e1
+e where eqns                            [hairy-ish]
+{f x}                   send f x
+{e x y}                 {{e x} y}
+x : y                   (:) x y
+if e1 then e2 else e3   $if e1 (fn _ => e2) (fn _ => e3)
+                        [not used directly]
+
+With no recursion:
+e1 where ()             e1
+e1 where v = e2; eqns	((fn v => e1) e2) where eqns
+
+eqn:
+v+ v = e		v+ = fn v => e
+
+eqns:
+f v1* c v2* = e1; f etc		
+
+need:
+
+f a b
+a where a = f a; g x = b  (recursion)
+offsides rule
+defn with multiple equations and pattern matching against literals
+expr; expr
+.literal
+"literal string"
+fn x => e
+{f x} -> promise
+miranda, override   (with better names?)
+
+()
+
+make_promise () -> [resolve, ref]
+  resolve value -> ()
+
+[x, y]
+[x, y] = z
+(implies:
+  (:) x xs -> xs'
+  is_list x -> bool
+  xs .hd -> x
+  xs .tl -> xs')
+
+to_str x -> str         miranda method!
+is_int x -> bool
+
+assert bool -> ()
+
+True, False
+bool .not -> bool
+bool .and bool -> bool  (what about short-circuit?)
+
+x:xs -> xs'
+
+out .print str -> ()
+
+str .. str -> str
+
+int .<= int -> bool
+int .+ int -> int
+int .- int -> int
+
+make_box x -> box
+box .:= x -> ()
+box .! -> x
+
+make_brand str -> [sealer, unsealer]
+sealer .seal x -> y
+unsealer .unseal y -> x
+
+for_each
+map
+zip
