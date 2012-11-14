@@ -187,7 +187,7 @@ def test3(string):
 
     return parse(start, string)
 
-print test3('let x=y; x')
+## test3('let x=y; x')
 #. '((lambda (x) y) x)'
 ## test3('x')
 #. 'x'
