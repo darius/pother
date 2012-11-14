@@ -1,14 +1,12 @@
 """
-Parse a Pother expression.
+Parse a Pother expression. Ported to use peglet.
 """
 
 import re
-from crusoeparse import parse
-
-def identity(x): return x
-def ignore(*args): pass
+from peglet import maybe, Unparsable, Parser, chunk
 
 def cons(x, xs): return [x] + xs
+nil = lambda: []
 def singleton(x): return [x]
 
 
@@ -26,7 +24,7 @@ def make_defer(v):      return '(defer %s)' % v
 def make_bind(v, e):    return '(bind %s %s)' % (v, e)
 def make_eqn(vs, e):    return '((%s) %s)' % (' '.join(vs), e)
 
-def make_list_pattern(params):
+def make_list_pattern(*params):
     return '(list %s)' % ' '.join(map(str, params))
 
 def make_list_expr(es):
@@ -35,100 +33,120 @@ def make_list_expr(es):
 def make_case(e, cases): return ('(case %s %s)'
                                  % (e, ' '.join('(%s %s)' % pair for pair in cases)))
 
-
-_ = r'\s*'
-# keyword = r'(let|case|defer|bind)\b'   # no \s*
-identifier = r'(?!let\b|case\b|defer\b|bind\b)([A-Za-z_]\w*)\b\s*'
-operator = r'(<=|:=|[!+-.])\s*'  # XXX
-
-string_literal = r'"([^"]*)"'
-
-def startme(thing): return lambda: [[_,thing,                     identity]]
-#print parse(startme(keyword), 'let')
-#print parse(startme(identifier), 'hey')
-
 def foldr(f, z, xs):
     for x in reversed(xs):
         z = f(x, z)
     return z
 
-def toy_grammar(string):
+def fold_app(f, fs):  return reduce(make_app, fs, f)
+def fold_apps(fs):    return reduce(make_app, fs)
+def fold_send(f, fs): return reduce(make_send, fs, f)
+def fold_lam(vp, e):  return foldr(make_lam, e, vp)
 
-    def fold_app(f, fs):  return reduce(make_app, fs, f)
-    def fold_apps(fs):    return reduce(make_app, fs)
-    def fold_send(f, fs): return reduce(make_send, fs, f)
-    def fold_lam(vp, e):  return foldr(make_lam, e, vp)
+# XXX not sure about paramlist here:
+fold_infix_app = lambda _left, _op, _right: \
+    fold_app(_op, [fold_apps(_left), _right])
 
-    def start(): return [[_,E,                     identity]]
+# XXX & was \ for lambda
 
-    def E():     return [[Fp,                      fold_apps], # XXX next line can never match
-                         [Fp, '`', V, '`', E,
-                          lambda _left, _op, _right:
-                              fold_app(_op, [fold_apps(_left), _right])],
-                         [r'&',_,Vp,'=>',_,E,     fold_lam],   # XXX was \ for lambda
-                         [r'let\b',_,Decls,E,_,    make_let],
-                         [r'case\b',_,E,Cases,     make_case]]
-
-    def Cases(): return [[Case,Cases,              cons],
-                         [Case,                    singleton]]
-
-    def Case():  return [['[|]',_,Param,'=>',_,E,  lambda _p,_e: (_p, _e)]]
-
-    def Param(): return [[Const,                   identity],
-                         [V,                       identity],
-                         ['[(]',_,Param,'[)]',_,   identity],
-
-                         [r'\[',_,ParamList,r'\]',_, identity],
-
+# XXX
 #                         [Param,operator,_,Param,  
 #                          lambda _left,_op,_right: [_op, _left, _right]]
-                         ]
 
-    def ParamList(): return [[Param,',',_,Param, lambda p1,p2: make_list_pattern([p1, p2])]]  # XXX hack
+toy_grammar = Parser(r"""
+Main       _ E !.
 
-    def Decls(): return [[Decl,Decls,              cons],
-                         [Decl,                    singleton]]
-    
-    def Decl():  return [[r'defer\b',_,V,';',_,          make_defer],
-                         [r'bind\b',_,V,'=',_,E,';',_,   make_bind],
-                         [Vp,'=',_,E,';',_,              make_eqn]]
+E          Fp ` V ` E           :fold_infix_app
+E          Fp                   :fold_apps
+E          & _ Vp => _ E        :fold_lam
+E          let\b _ Decls E      :make_let
+E          case\b _ E Cases     :make_case
 
-    def Fp():    return [[F,Fs,                    cons]]
-    def Fs():    return [[F,Fs,                    cons],
-                         [                         lambda: []]]
+Cases      Case Cases           :cons
+Cases      Case                 :singleton
 
-    def F():     return [[Const,                   make_const],
-                         [V,                       make_var],
-                         ['[(]',_,E,'[)]',_,       identity],
-                         ['{',_,F,_,Fp,'}',_,      fold_send],
-                         [r'\[',_,EList,r'\]',_,   make_list_expr],
-                         ]
+Case       \| _ Param => _ E    :chunk
 
-    def EList(): return [[E,',',_,EList,           cons],
-                         [E,                       singleton],
-                         [                         lambda: []]]
+Param      Const
+Param      V
+Param      \( _ Param \) _
+Param      \[ _ ParamList \] _
 
-    def Vp():    return [[V,Vp,                    cons],
-                         [V,                       singleton]]
+ParamList  Param , _ Param      :make_list_pattern
 
-    def V():     return [[identifier,              identity],
-                         [operator,                identity]]
+Decls      Decl Decls           :cons
+Decls      Decl                 :singleton
 
-    def Const(): return [['[.]',_,V,               make_lit_sym],
-                         [string_literal,_,        repr],
-                         [r'(-?\d+)',_,            identity],
-                         ['[(]',_,'[)]',_,         lambda: '()'],
-                         [r'\[',_,r'\]',_,         lambda: '[]'],
-                         ]
+Decl       defer\b _ V ; _      :make_defer
+Decl       bind\b _ V = _ E ; _ :make_bind
+Decl       Vp = _ E ; _         :make_eqn
 
-    return parse(start, string)
+Fp         F Fs                 :cons
+Fs         F Fs                 :cons
+Fs                              :nil
 
-print toy_grammar('let x=y; x')
-print toy_grammar('')
-print toy_grammar('x x . y')
-print toy_grammar('(when (in the)')
-print toy_grammar('&M => (&f => M (f f)) (&f => M (f f))')
-print toy_grammar('&a b c => a b')
+F          Const                :make_const
+F          V                    :make_var
+F          \( _ E \) _
+F          { _ F Fp } _         :fold_send
+F          \[ _ EList \] _      :make_list_expr
+
+EList      E , _ EList          :cons
+EList      E                    :singleton
+EList                           :nil
+
+Vp         V Vp                 :cons
+Vp         V                    :singleton
+
+V          Identifier
+V          Operator
+
+Identifier (?!let\b|case\b|defer\b|bind\b)([A-Za-z_]\w*)\b\s*
+Operator   (<=|:=|[!+-.])\s*
+
+Const      \. _ V               :make_lit_sym
+Const      "([^"]*)" _          :repr
+Const      (-?\d+) _
+Const      \( _ \) _            :parens
+Const      \[ _ \] _            :brackets
+
+_          \s*
+""", repr=repr, **globals())
+
+## toy_grammar('0 0', rule='Fp')
+#. (['0', '0'],)
+## toy_grammar('.+')
+#. ('(quote +)',)
+## toy_grammar('0 .+')
+#. ('(0 (quote +))',)
+
+print toy_grammar('let x=y; x')[0]
+print maybe(toy_grammar, '')
+print toy_grammar('x x . y')[0]
+print maybe(toy_grammar, '(when (in the)')
+print toy_grammar('&M => (&f => M (f f)) (&f => M (f f))')[0]
+print toy_grammar('&a b c => a b')[0]
+
+## toy_grammar('x')
+#. ('x',)
+## toy_grammar('let x=y; x')
+#. ('(let ((x) y) x)',)
+## toy_grammar('')
+#. Traceback (most recent call last):
+#.   File "/home/darius/git/pother/peglet.py", line 63, in parse
+#.     else: raise Unparsable(rule, (text[:utmost[0]], text[utmost[0]:]))
+#. Unparsable: ('Main', ('', ''))
+## toy_grammar('x x . y')
+#. ('((x x) (quote y))',)
+## toy_grammar('(when (in the)')
+#. Traceback (most recent call last):
+#.   File "/home/darius/git/pother/peglet.py", line 63, in parse
+#.     else: raise Unparsable(rule, (text[:utmost[0]], text[utmost[0]:]))
+#. Unparsable: ('Main', ('(when (in the)', ''))
+## toy_grammar('&M => (&f => M (f f)) (&f => M (f f))')
+#. ('(lambda (M) ((lambda (f) (M (f f))) (lambda (f) (M (f f)))))',)
+## toy_grammar('&a b c => a b')
+#. ('(lambda (a) (lambda (b) (lambda (c) (a b))))',)
 
 mint = r"""
 let make_mint name =
@@ -165,8 +183,14 @@ let make_mint name =
 
 make_mint
 """
-print toy_grammar(mint)
+#try: print toy_grammar(mint)
+#except Unparsable, e:
+#    print e.args[1][0]
+#    print 'XXX'
+#    print e.args[1][1]
 #print toy_grammar('let defer mint; mint')
+print toy_grammar(mint)[0]
+#. ('(let ((make_mint name) (case (make_brand name) ((list sealer unsealer) (let (defer mint) ((real_mint name msg) (case msg ((quote __print_on) (lambda (out) ((out (quote print)) ((name (quote .)) "\'s mint")))) ((quote make_purse) (lambda (initial_balance) (let ((_) (assert (is_int initial_balance))) ((_) (assert ((0 (quote <=)) initial_balance))) ((balance) (make_box initial_balance)) ((decr amount) (let ((_) (assert (is_int amount))) ((_) (assert ((((0 (quote <=)) amount) (quote and)) ((amount (quote <=)) balance)))) ((balance (quote :=)) (((balance (quote !)) (quote -)) amount)))) ((purse msg) (case msg ((quote __print_on) (lambda (out) ((out (quote print)) ((((((\'has \' (quote .)) (to_str balance)) (quote .)) name) (quote .)) \' bucks\')))) ((quote balance) (balance (quote !))) ((quote sprout) ((mint (quote make_purse)) 0)) ((quote get_decr) ((sealer (quote seal)) decr)) ((quote deposit) (lambda (amount) (lambda (source) (let ((_) (((unsealer (quote unseal)) (source (quote get_decr))) amount)) ((balance (quote :=)) (((balance (quote !)) (quote +)) amount)))))))) purse))))) (bind mint real_mint) mint)))) make_mint)',)
 
 mintskel = r"""
 let make_mint name =
@@ -178,7 +202,8 @@ let make_mint name =
 
 make_mint
 """
-print toy_grammar(mintskel)
+print toy_grammar(mintskel)[0]
+#. ('(let ((make_mint name) (case (make_brand name) ((list sealer unsealer) (let (defer mint) mint)))) make_mint)',)
 
 voting = r"""
 let make_one_shot f =
@@ -202,4 +227,5 @@ let make_one_shot f =
 
 start_voting
 """
-print toy_grammar(voting)
+print toy_grammar(voting)[0]
+#. ('(let ((make_one_shot f) (let ((armed) (make_box True)) (lambda (x) (let ((_) (assert ((armed (quote !)) (quote not)))) ((_) ((armed (quote :=)) False)) (f x))))) ((start_voting voters choices timer) (let ((ballot_box) ((map (lambda (_) (make_box 0))) choices)) ((poll voter) (let ((make_checkbox pair) (case pair ((list choice tally) (list (((choice ,) make_one_shot) (lambda (_) ((tally (quote :=)) (((tally (quote !)) (quote +)) 1)))))))) ((ballot) ((map make_checkbox) ((zip choices) ballot_box))) (voter <- ballot))) ((_) ((for_each poll) voters)) (list ((close_polls ,) totals)))) start_voting)',)
