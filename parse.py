@@ -61,7 +61,7 @@ def toy_grammar(string):
 
     def start(): return [[_,E,                     identity]]
 
-    def E():     return [[Fp,                      fold_apps],
+    def E():     return [[Fp,                      fold_apps], # XXX next line can never match
                          [Fp, '`', V, '`', E,
                           lambda _left, _op, _right:
                               fold_app(_op, [fold_apps(_left), _right])],
